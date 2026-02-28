@@ -144,9 +144,22 @@ export function ResultsSection({ data }: ResultsSectionProps) {
           <div className="flex flex-col lg:flex-row lg:items-start gap-8">
             {/* Company identity */}
             <div className="flex-1 space-y-1">
-              <h2 className="font-display text-3xl md:text-4xl text-foreground leading-none tracking-wide">
-                {(data.name || data.ticker).toUpperCase()}
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="font-display text-3xl md:text-4xl text-foreground leading-none tracking-wide">
+                  {(data.name || data.ticker).toUpperCase()}
+                </h2>
+                {data.sourceUrl && (
+                  <a
+                    href={data.sourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-1.5 rounded-full hover:bg-primary/10 text-muted-foreground/40 hover:text-primary transition-colors"
+                    title="View on Yahoo Finance"
+                  >
+                    <ArrowUpRight className="w-4 h-4" />
+                  </a>
+                )}
+              </div>
               <div className="flex items-center gap-2 mt-2">
                 <span className="text-[10px] font-mono text-muted-foreground/60 uppercase tracking-wider">
                   vs {data.marketIndex}
@@ -366,7 +379,19 @@ export function ResultsSection({ data }: ResultsSectionProps) {
                     </TableCell>
                     <TableCell className="py-3.5">
                       <div className="flex flex-col gap-0.5">
-                        <span className="text-sm font-semibold text-foreground leading-tight">{peer.name}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-foreground leading-tight">{peer.name}</span>
+                          {peer.sourceUrl && (
+                            <a
+                              href={peer.sourceUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-muted-foreground/30 hover:text-primary transition-colors"
+                            >
+                              <ArrowUpRight className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <span className="font-mono text-[9px] text-muted-foreground/50 uppercase tracking-wider">{peer.ticker}</span>
                           {peer.sector?.split(" > ")[1] && (
@@ -406,7 +431,7 @@ export function ResultsSection({ data }: ResultsSectionProps) {
         {/* Footer note */}
         <div className="px-5 py-3 border-t border-border bg-muted/10 flex items-center justify-between gap-4">
           <p className="text-[9px] font-mono text-muted-foreground/40 leading-relaxed">
-            Financials: TTM where applicable · Non-INR figures converted at live Yahoo Finance FX rates · Sorted by market cap
+            Data sourced from Yahoo Finance API · Financials: TTM where applicable · Non-INR figures converted at live Yahoo Finance FX rates · Sorted by market cap
           </p>
           <p className="text-[9px] font-mono text-muted-foreground/30 whitespace-nowrap">
             Damodaran Classification

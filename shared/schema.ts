@@ -67,6 +67,7 @@ export const peerBetaSchema = z.object({
     debtToEquity: z.number().optional(),
     profitMargin: z.number().optional(),
     sector: z.string().optional(),
+    sourceUrl: z.string().optional(),
     similarityScore: z.number().optional(),
     confidence: z.enum(["High", "Medium", "Fallback"]).optional(),
     error: z.string().optional()
@@ -95,6 +96,7 @@ export const calculateBetaResponseSchema = z.object({
     ebitda: z.number().optional().nullable(),
     debtToEquity: z.number().optional().nullable(),
     profitMargin: z.number().optional().nullable(),
+    sourceUrl: z.string().optional().nullable(),
     peers: z.array(peerBetaSchema)
 });
 

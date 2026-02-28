@@ -238,6 +238,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ebitda: (financials?.financialData?.ebitda || 0) * financialFactor,
         debtToEquity: financials?.financialData?.debtToEquity,
         profitMargin: financials?.financialData?.profitMargins,
+        sourceUrl: `https://finance.yahoo.com/quote/${fullTicker}`,
       };
 
       const peerList = await getPeers(fullTicker, exchangeRate);
@@ -280,7 +281,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ebitda: (pFin?.financialData?.ebitda || 0) * pFinancialFact,
           debtToEquity: pFin?.financialData?.debtToEquity,
           profitMargin: pFin?.financialData?.profitMargins,
-          sector: peer.sector
+          sector: peer.sector,
+          sourceUrl: `https://finance.yahoo.com/quote/${peer.slug}`,
         };
       }));
 
