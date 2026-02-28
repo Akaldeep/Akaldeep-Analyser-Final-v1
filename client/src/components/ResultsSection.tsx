@@ -429,12 +429,17 @@ export function ResultsSection({ data }: ResultsSectionProps) {
         </div>
 
         {/* Footer note */}
-        <div className="px-5 py-3 border-t border-border bg-muted/10 flex items-center justify-between gap-4">
-          <p className="text-[9px] font-mono text-muted-foreground/40 leading-relaxed">
-            Data sourced from Yahoo Finance API · Financials: TTM where applicable · Non-INR figures converted at live Yahoo Finance FX rates · Sorted by market cap
-          </p>
+        <div className="px-5 py-3 border-t border-border bg-muted/10 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <p className="text-[9px] font-mono text-muted-foreground/40 leading-relaxed">
+              Statistical metrics derived from top "{data.peers.length}" peers in the "{targetIndustry || "Industry"}" industry by market cap proximity.
+            </p>
+            <p className="text-[9px] font-mono text-muted-foreground/40 leading-relaxed">
+              Data sourced from Yahoo Finance API · Financials: TTM (Trailing Twelve Months) where applicable · Non-INR figures converted at live Yahoo Finance FX rates · Sorted by market cap
+            </p>
+          </div>
           <p className="text-[9px] font-mono text-muted-foreground/30 whitespace-nowrap">
-            Damodaran Classification
+            Methodology: Damodaran Industry Classification & Beta Estimation
           </p>
         </div>
       </motion.div>
