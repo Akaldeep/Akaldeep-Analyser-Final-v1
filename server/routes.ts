@@ -8,7 +8,20 @@ import ExcelJS from 'exceljs';
 import * as fs from 'fs';
 import path from 'path';
 
-const yf = new YahooFinance();
+// Yahoo Finance blocks datacenter IPs (Railway, AWS etc.) without browser headers
+const yf = new YahooFinance({
+  fetchOptions: {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Cache-Control': 'max-age=0',
+    },
+  },
+  suppressNotices: ['yahooSurvey'],
+});
 
 
 let industryList: { symbol: string; name: string; industry: string }[] = [];
@@ -107,39 +120,57 @@ function calculateFinancialMetrics(stockPrices: number[], marketPrices: number[]
   };
 }
 
-async function fetchHistoricalData(ticker: string, startDate: string, endDate: string) {
-  try {
-    const result = await yf.historical(ticker, {
-      period1: new Date(startDate),
-      period2: new Date(endDate),
-      interval: '1d'
-    });
-    return result;
-  } catch (error) {
-    console.error(`Error fetching data for ${ticker}:`, error);
-    return null;
+async function fetchHistoricalData(ticker: string, startDate: string, endDate: string, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const result = await yf.historical(ticker, {
+        period1: new Date(startDate),
+        period2: new Date(endDate),
+        interval: '1d'
+      });
+      if (result && result.length > 0) return result;
+      if (attempt < retries) await new Promise(r => setTimeout(r, attempt * 1000));
+    } catch (error) {
+      console.error(`Error fetching data for ${ticker} (attempt ${attempt}/${retries}):`, error);
+      if (attempt < retries) await new Promise(r => setTimeout(r, attempt * 1000));
+    }
   }
+  return null;
 }
 
-async function getPeers(ticker: string, exchangeRate: number): Promise<{ slug: string; sector: string; marketCap: number }[]> {
+async function getPeers(ticker: string, exchange: string, exchangeRate: number): Promise<{ slug: string; sector: string; industry: string; marketCap: number }[]> {
   try {
     const summary = await yf.quoteSummary(ticker, { modules: ['assetProfile', 'summaryDetail'] }).catch(() => null);
     if (!summary?.assetProfile) return [];
 
     const targetIndustry = summary.assetProfile.industry || "";
+    const targetSuffix = exchange === "NSE" ? ".NS" : ".BO"; // always use same exchange as target
     const tickerBase = ticker.split('.')[0];
     const excelMatch = industryList.find(i => i.symbol === tickerBase);
     const excelIndustry = excelMatch?.industry;
 
-    let candidateSymbols: string[] = [];
-    const recommendations = await yf.recommendationsBySymbol(ticker);
-    candidateSymbols = recommendations?.recommendedSymbols?.map((r: any) => r.symbol) || [];
+    // Collect raw candidates — may have mixed .NS/.BO/.BO duplicates
+    let rawCandidates: string[] = [];
+    const recommendations = await yf.recommendationsBySymbol(ticker).catch(() => null);
+    rawCandidates = recommendations?.recommendedSymbols?.map((r: any) => r.symbol) || [];
 
     if (excelIndustry) {
       const industryPeers = industryList
         .filter(item => item.industry === excelIndustry && item.symbol !== tickerBase)
-        .map(item => `${item.symbol}.NS`); // Default to NSE
-      candidateSymbols = Array.from(new Set([...candidateSymbols, ...industryPeers]));
+        .map(item => `${item.symbol}${targetSuffix}`);
+      rawCandidates = [...rawCandidates, ...industryPeers];
+    }
+
+    // DEDUPLICATE by base symbol — if both INFY.NS and INFY.BO appear, keep only targetSuffix version
+    const seenBases = new Set<string>();
+    const candidateSymbols: string[] = [];
+    for (const sym of rawCandidates) {
+      const base = sym.split('.')[0];
+      if (base === tickerBase) continue; // skip self
+      if (seenBases.has(base)) continue; // skip duplicate exchange
+      seenBases.add(base);
+      // Normalize to same exchange as the target stock
+      candidateSymbols.push(`${base}${targetSuffix}`);
     }
 
     const peerSummaries = await Promise.all(
@@ -148,11 +179,11 @@ async function getPeers(ticker: string, exchangeRate: number): Promise<{ slug: s
 
     const verifiedPeers = await Promise.all(candidateSymbols.slice(0, 20).map(async (symbol, i) => {
       const s = peerSummaries[i];
-      if (!s?.assetProfile || symbol === ticker) return null;
-      
-      const isSameIndustry = s.assetProfile.industry === targetIndustry || 
-                            (excelIndustry && industryList.find(item => item.symbol === symbol.split('.')[0])?.industry === excelIndustry);
-      
+      if (!s?.assetProfile) return null;
+
+      const symbolBase = symbol.split('.')[0];
+      const isSameIndustry = s.assetProfile.industry === targetIndustry ||
+        (excelIndustry && industryList.find(item => item.symbol === symbolBase)?.industry === excelIndustry);
       if (!isSameIndustry) return null;
 
       const quote = await yf.quote(symbol).catch(() => null);
@@ -163,6 +194,7 @@ async function getPeers(ticker: string, exchangeRate: number): Promise<{ slug: s
       return {
         slug: symbol,
         sector: `${s.assetProfile.sector || 'Unknown'} > ${s.assetProfile.industry || 'Unknown'}`,
+        industry: s.assetProfile.industry || 'Unknown',
         marketCap: peerMarketCap
       };
     }));
@@ -175,6 +207,42 @@ async function getPeers(ticker: string, exchangeRate: number): Promise<{ slug: s
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  // Market overview: live Nifty/Sensex + financial news
+  app.get('/api/market/overview', async (req, res) => {
+    try {
+      const [nifty, sensex, newsData] = await Promise.all([
+        yf.quote('^NSEI').catch(() => null),
+        yf.quote('^BSESN').catch(() => null),
+        yf.search('India stock market NSE BSE', { newsCount: 12, enableFuzzyQuery: false }).catch(() => null),
+      ]);
+      res.json({
+        indices: {
+          nifty50: nifty ? {
+            price: nifty.regularMarketPrice,
+            change: nifty.regularMarketChange,
+            changePercent: nifty.regularMarketChangePercent,
+            prevClose: nifty.regularMarketPreviousClose,
+          } : null,
+          sensex: sensex ? {
+            price: sensex.regularMarketPrice,
+            change: sensex.regularMarketChange,
+            changePercent: sensex.regularMarketChangePercent,
+            prevClose: sensex.regularMarketPreviousClose,
+          } : null,
+        },
+        news: ((newsData as any)?.news || []).slice(0, 12).map((n: any) => ({
+          title: n.title,
+          publisher: n.publisher,
+          link: n.link,
+          providerPublishTime: n.providerPublishTime,
+        })),
+      });
+    } catch (err) {
+      console.error('Market overview error:', err);
+      res.status(500).json({ message: 'Failed to fetch market data' });
+    }
+  });
+
   app.post(api.beta.calculate.path, async (req, res) => {
     try {
       const { ticker, exchange, startDate, endDate, period } = api.beta.calculate.input.parse(req.body);
@@ -186,7 +254,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         fetchHistoricalData(marketTicker, startDate, endDate),
         fetchHistoricalData(fullTicker, startDate, endDate),
         yf.quote(fullTicker).catch(() => null),
-        yf.quoteSummary(fullTicker, { modules: ['financialData', 'defaultKeyStatistics', 'summaryDetail'] }).catch(() => null),
+        yf.quoteSummary(fullTicker, { modules: ['financialData', 'defaultKeyStatistics', 'summaryDetail', 'assetProfile'] }).catch(() => null),
         yf.quote('USDINR=X').catch(() => null)
       ]);
 
@@ -218,30 +286,42 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const priceFactor = tradingCurrency === 'USD' ? exchangeRate : 1;       // for market cap, EV (price-based)
       const financialFactor = financialCurrency === 'USD' ? exchangeRate : 1; // for revenue, EBITDA (report-based)
 
+      // Fetch asset profile for industry/sector info
+
       const targetData = {
         ticker: fullTicker,
         name: quote?.longName || quote?.shortName || ticker,
         marketIndex: exchange === "NSE" ? "NIFTY 50" : "BSE SENSEX",
+        industry: financials?.assetProfile?.industry || null,
+        sector: financials?.assetProfile?.sector || null,
+        exchange,
         beta: metrics.beta,
         volatility: metrics.volatility,
         alpha: metrics.alpha,
         correlation: metrics.correlation,
         rSquared: metrics.rSquared,
         period: period || "5Y",
+        dataPoints: sPrices.length,
         marketCap: (quote?.marketCap || 0) * priceFactor,
         revenue: (financials?.financialData?.totalRevenue || 0) * financialFactor,
         enterpriseValue: (financials?.defaultKeyStatistics?.enterpriseValue || 0) * priceFactor,
         evRevenueMultiple: (financials?.defaultKeyStatistics?.enterpriseValue && financials?.financialData?.totalRevenue) ? (financials.defaultKeyStatistics.enterpriseValue / (financials.financialData.totalRevenue * financialFactor / priceFactor)) : undefined,
-        peRatio: financials?.summaryDetail?.trailingPE,
-        pbRatio: financials?.defaultKeyStatistics?.priceToBook,
-        dividendYield: financials?.summaryDetail?.dividendYield,
+        peRatio: financials?.summaryDetail?.trailingPE ?? null,
+        pbRatio: financials?.defaultKeyStatistics?.priceToBook ?? null,
+        dividendYield: financials?.summaryDetail?.dividendYield ?? null,
         ebitda: (financials?.financialData?.ebitda || 0) * financialFactor,
-        debtToEquity: financials?.financialData?.debtToEquity,
-        profitMargin: financials?.financialData?.profitMargins,
+        // Use ?? null (not || null) so that genuine 0 values are preserved
+        debtToEquity: financials?.financialData?.debtToEquity ?? null,
+        profitMargin: financials?.financialData?.profitMargins ?? null,
+        grossMargin: (financials?.financialData as any)?.grossMargins ?? null,
+        operatingMargin: (financials?.financialData as any)?.operatingMargins ?? null,
+        returnOnEquity: (financials?.financialData as any)?.returnOnEquity ?? null,
+        returnOnAssets: (financials?.financialData as any)?.returnOnAssets ?? null,
+        currentRatio: (financials?.financialData as any)?.currentRatio ?? null,
         sourceUrl: `https://finance.yahoo.com/quote/${fullTicker}`,
       };
 
-      const peerList = await getPeers(fullTicker, exchangeRate);
+      const peerList = await getPeers(fullTicker, exchange, exchangeRate);
       const peerResults = await Promise.all(peerList.map(async (peer) => {
         const [pData, pQuote, pFin] = await Promise.all([
           fetchHistoricalData(peer.slug, startDate, endDate),
@@ -266,6 +346,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return {
           ticker: peer.slug,
           name: pQuote?.shortName || peer.slug,
+          industry: peer.industry,
           beta: pMet?.beta ?? null,
           volatility: pMet?.volatility ?? null,
           alpha: pMet?.alpha ?? null,
@@ -275,18 +356,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           revenue: (pFin?.financialData?.totalRevenue || 0) * pFinancialFact,
           enterpriseValue: (pFin?.defaultKeyStatistics?.enterpriseValue || 0) * pPriceFact,
           evRevenueMultiple: (pFin?.defaultKeyStatistics?.enterpriseValue && pFin?.financialData?.totalRevenue) ? (pFin.defaultKeyStatistics.enterpriseValue / (pFin.financialData.totalRevenue * pFinancialFact / pPriceFact)) : undefined,
-          peRatio: pFin?.summaryDetail?.trailingPE,
-          pbRatio: pFin?.defaultKeyStatistics?.priceToBook,
-          dividendYield: pFin?.summaryDetail?.dividendYield,
+          peRatio: pFin?.summaryDetail?.trailingPE ?? null,
+          pbRatio: pFin?.defaultKeyStatistics?.priceToBook ?? null,
+          dividendYield: pFin?.summaryDetail?.dividendYield ?? null,
           ebitda: (pFin?.financialData?.ebitda || 0) * pFinancialFact,
-          debtToEquity: pFin?.financialData?.debtToEquity,
-          profitMargin: pFin?.financialData?.profitMargins,
+          // Use ?? null so genuine 0 values (e.g. zero-debt companies) are preserved
+          debtToEquity: pFin?.financialData?.debtToEquity ?? null,
+          profitMargin: pFin?.financialData?.profitMargins ?? null,
+          grossMargin: (pFin?.financialData as any)?.grossMargins ?? null,
+          operatingMargin: (pFin?.financialData as any)?.operatingMargins ?? null,
+          returnOnEquity: (pFin?.financialData as any)?.returnOnEquity ?? null,
+          returnOnAssets: (pFin?.financialData as any)?.returnOnAssets ?? null,
+          currentRatio: (pFin?.financialData as any)?.currentRatio ?? null,
           sector: peer.sector,
           sourceUrl: `https://finance.yahoo.com/quote/${peer.slug}`,
         };
       }));
 
-      const finalPeers = peerResults.filter(p => p !== null).sort((a, b) => (b?.marketCap || 0) - (a?.marketCap || 0));
+      // Filter: remove nulls AND peers with no market cap data (bad Yahoo Finance returns)
+      const finalPeers = peerResults
+        .filter((p): p is NonNullable<typeof p> => p !== null && p.marketCap > 0)
+        .sort((a, b) => b.marketCap - a.marketCap);
       
       await storage.createSearch({
         ticker: fullTicker,

@@ -79,7 +79,9 @@
     "ws": "^8.18.0",
     "yahoo-finance2": "^3.11.2",
     "zod": "^3.25.76",
-    "zod-validation-error": "^3.5.4"
+    "zod-validation-error": "^3.5.4",
+    "react-simple-maps": "^3.0.0",
+    "@types/topojson-specification": "^1.0.5"
   },
   "devDependencies": {
     "@replit/vite-plugin-cartographer": "^0.4.4",
